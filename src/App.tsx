@@ -174,18 +174,7 @@ function App() {
                         preserveAspectRatio="none"
                         onPointerMove={updatePoint}
                       >
-                        <defs>
-                          <marker id="axis-arrow-vertical" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
-                            <path d="M0,0 L0,6 L6,3 z" fill="#38d99a" />
-                          </marker>
-                          <marker id="axis-arrow-sideline" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
-                            <path d="M0,0 L0,6 L6,3 z" fill="#55a8ff" />
-                          </marker>
-                          <marker id="axis-arrow-goal" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
-                            <path d="M0,0 L0,6 L6,3 z" fill="#f4bd55" />
-                          </marker>
-                        </defs>
-                        {axes.map(axis => {
+{axes.map(axis => {
                           const endpoints = [
                             { key: 'end' as const, point: axis.end },
                             ...(axis.oppositeEnd ? [{ key: 'oppositeEnd' as const, point: axis.oppositeEnd }] : []),
@@ -201,7 +190,6 @@ function App() {
                                     strokeWidth="5"
                                     vectorEffect="non-scaling-stroke"
                                     strokeLinecap="round"
-                                    markerEnd={`url(#${axis.id === 'vertical' ? 'axis-arrow-vertical' : axis.id === 'sideline' ? 'axis-arrow-sideline' : 'axis-arrow-goal'})`}
                                   />
                                   <circle
                                     cx={point.x} cy={point.y} r="11"
@@ -220,7 +208,7 @@ function App() {
                           )
                         })}
                         <circle
-                          cx={origin.x} cy={origin.y} r="10"
+                          cx={origin.x} cy={origin.y} r="5"
                           fill="#ffd43b" stroke="#fff" strokeWidth="4"
                           vectorEffect="non-scaling-stroke"
                           className="calibration-handle origin-handle"
