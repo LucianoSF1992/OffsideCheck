@@ -2,12 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import './App.css'
 
 type Point = { x: number; y: number }
-type ReferenceLine = { id: number; label: string; color: string; start: Point; end: Point }
+type Axis = { id: 'vertical' | 'sideline' | 'goalLine'; label: string; color: string; end: Point; oppositeEnd?: Point }
+type DragTarget = { kind: 'origin' } | { kind: 'axis'; axisId: Axis['id']; endpoint: 'end' | 'oppositeEnd' }
 
-const initialLines: ReferenceLine[] = [
-  { id: 1, label: 'Referência 1', color: '#35d39a', start: { x: 120, y: 300 }, end: { x: 880, y: 300 } },
-  { id: 2, label: 'Referência 2', color: '#55a8ff', start: { x: 180, y: 500 }, end: { x: 820, y: 500 } },
-  { id: 3, label: 'Referência 3', color: '#f4bd55', start: { x: 300, y: 700 }, end: { x: 700, y: 700 } },
+const initialOrigin: Point = { x: 500, y: 520 }
+const initialAxes: Axis[] = [
+  { id: 'vertical', label: 'Eixo vertical', color: '#38d99a', end: { x: 500, y: 150 } },
+  { id: 'sideline', label: 'Eixo da linha lateral', color: '#55a8ff', end: { x: 820, y: 790 }, oppositeEnd: { x: 205, y: 245 } },
+  { id: 'goalLine', label: 'Eixo da linha de fundo', color: '#f4bd55', end: { x: 130, y: 450 } },
 ]
 
 function App() {
@@ -16,8 +18,9 @@ function App() {
   const [mediaType, setMediaType] = useState<'image' | 'video' | null>(null)
   const [imageReady, setImageReady] = useState(false)
   const [calibrationMode, setCalibrationMode] = useState(false)
-  const [lines, setLines] = useState<ReferenceLine[]>(initialLines)
-  const [activeHandle, setActiveHandle] = useState<{ lineId: number; point: 'start' | 'end' } | null>(null)
+  const [origin, setOrigin] = useState<Point>(initialOrigin)
+  const [axes, setAxes] = useState<Axis[]>(initialAxes)
+  const [activeDrag, setActiveDrag] = useState<DragTarget | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
 
@@ -29,10 +32,10 @@ function App() {
   }, [file])
 
   useEffect(() => {
-    if (!activeHandle) return
+    if (!activeDrag) return
 
     function finishDrag() {
-      setActiveHandle(null)
+      setActiveDrag(null)
     }
 
     window.addEventListener('pointerup', finishDrag)
@@ -41,7 +44,7 @@ function App() {
       window.removeEventListener('pointerup', finishDrag)
       window.removeEventListener('pointercancel', finishDrag)
     }
-  }, [activeHandle])
+  }, [activeDrag])
 
   function handleFile(event: React.ChangeEvent<HTMLInputElement>) {
     const selected = event.target.files?.[0]
@@ -57,7 +60,7 @@ function App() {
     setMediaType(selected.type.startsWith('image/') ? 'image' : 'video')
     setImageReady(false)
     setCalibrationMode(false)
-    setLines(initialLines)
+    setOrigin(initialOrigin); setAxes(initialAxes)
   }
 
   function clearFile() {
@@ -66,24 +69,46 @@ function App() {
     setMediaType(null)
     setImageReady(false)
     setCalibrationMode(false)
-    setLines(initialLines)
+    setOrigin(initialOrigin); setAxes(initialAxes)
     if (inputRef.current) inputRef.current.value = ''
   }
 
   function updatePoint(event: React.PointerEvent<SVGSVGElement>) {
-    if (!activeHandle || !svgRef.current) return
+    if (!activeDrag || !svgRef.current) return
     const rect = svgRef.current.getBoundingClientRect()
     const x = Math.max(0, Math.min(1000, ((event.clientX - rect.left) / rect.width) * 1000))
     const y = Math.max(0, Math.min(1000, ((event.clientY - rect.top) / rect.height) * 1000))
 
-    setLines(current => current.map(line => {
-      if (line.id !== activeHandle.lineId) return line
-      return { ...line, [activeHandle.point]: { x, y } }
-    }))
+    if (activeDrag.kind === 'origin') {
+      const deltaX = x - origin.x
+      const deltaY = y - origin.y
+      setOrigin({ x, y })
+      setAxes(current => current.map(axis => ({
+        ...axis,
+        end: {
+          x: Math.max(0, Math.min(1000, axis.end.x + deltaX)),
+          y: Math.max(0, Math.min(1000, axis.end.y + deltaY)),
+        },
+        ...(axis.oppositeEnd ? {
+          oppositeEnd: {
+            x: Math.max(0, Math.min(1000, axis.oppositeEnd.x + deltaX)),
+            y: Math.max(0, Math.min(1000, axis.oppositeEnd.y + deltaY)),
+          },
+        } : {}),
+      })))
+      return
+    }
+
+    setAxes(current => current.map(axis =>
+      axis.id === activeDrag.axisId
+        ? { ...axis, [activeDrag.endpoint]: { x, y } }
+        : axis
+    ))
   }
 
   function resetCalibration() {
-    setLines(initialLines)
+    setOrigin(initialOrigin)
+    setAxes(initialAxes)
   }
 
   return (
@@ -110,7 +135,7 @@ function App() {
       <main className="main">
         <header className="topbar">
           <div><span className="breadcrumb">Workspace /</span><strong> Nova análise</strong></div>
-          <div className="version">VERSÃO 0.2.0</div>
+          <div className="version">VERSÃO 0.3.1</div>
         </header>
 
         <section className="content">
@@ -128,7 +153,7 @@ function App() {
               <div className="panel-header">
                 <div>
                   <h2>{calibrationMode ? 'Calibração da perspectiva' : 'Visualização da jogada'}</h2>
-                  <span>{calibrationMode ? 'Arraste os pontos para posicionar as referências' : 'Imagem ou vídeo da partida'}</span>
+                  <span>{calibrationMode ? 'Mova a origem amarela e ajuste as extremidades dos três eixos' : 'Imagem ou vídeo da partida'}</span>
                 </div>
                 {file && <button className="clear-button" onClick={clearFile}>Remover arquivo</button>}
               </div>
@@ -149,40 +174,67 @@ function App() {
                         preserveAspectRatio="none"
                         onPointerMove={updatePoint}
                       >
-                        {lines.map(line => (
-                          <g key={line.id}>
-                            <line
-                              x1={line.start.x} y1={line.start.y}
-                              x2={line.end.x} y2={line.end.y}
-                              stroke={line.color}
-                              strokeWidth="5"
-                              vectorEffect="non-scaling-stroke"
-                              strokeLinecap="round"
-                            />
-                            <circle
-                              cx={line.start.x} cy={line.start.y} r="13"
-                              fill={line.color} stroke="#fff" strokeWidth="3"
-                              vectorEffect="non-scaling-stroke"
-                              className="calibration-handle"
-                              onPointerDown={event => {
-                                event.preventDefault()
-                                event.stopPropagation()
-                                setActiveHandle({ lineId: line.id, point: 'start' })
-                              }}
-                            />
-                            <circle
-                              cx={line.end.x} cy={line.end.y} r="13"
-                              fill={line.color} stroke="#fff" strokeWidth="3"
-                              vectorEffect="non-scaling-stroke"
-                              className="calibration-handle"
-                              onPointerDown={event => {
-                                event.preventDefault()
-                                event.stopPropagation()
-                                setActiveHandle({ lineId: line.id, point: 'end' })
-                              }}
-                            />
-                          </g>
-                        ))}
+                        <defs>
+                          <marker id="axis-arrow-vertical" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
+                            <path d="M0,0 L0,6 L6,3 z" fill="#38d99a" />
+                          </marker>
+                          <marker id="axis-arrow-sideline" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
+                            <path d="M0,0 L0,6 L6,3 z" fill="#55a8ff" />
+                          </marker>
+                          <marker id="axis-arrow-goal" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
+                            <path d="M0,0 L0,6 L6,3 z" fill="#f4bd55" />
+                          </marker>
+                        </defs>
+                        {axes.map(axis => {
+                          const endpoints = [
+                            { key: 'end' as const, point: axis.end },
+                            ...(axis.oppositeEnd ? [{ key: 'oppositeEnd' as const, point: axis.oppositeEnd }] : []),
+                          ]
+                          return (
+                            <g key={axis.id}>
+                              {endpoints.map(({ key, point }) => (
+                                <g key={key}>
+                                  <line
+                                    x1={origin.x} y1={origin.y}
+                                    x2={point.x} y2={point.y}
+                                    stroke={axis.color}
+                                    strokeWidth="5"
+                                    vectorEffect="non-scaling-stroke"
+                                    strokeLinecap="round"
+                                    markerEnd={`url(#${axis.id === 'vertical' ? 'axis-arrow-vertical' : axis.id === 'sideline' ? 'axis-arrow-sideline' : 'axis-arrow-goal'})`}
+                                  />
+                                  <circle
+                                    cx={point.x} cy={point.y} r="11"
+                                    fill={axis.color} stroke="#fff" strokeWidth="3"
+                                    vectorEffect="non-scaling-stroke"
+                                    className="calibration-handle axis-handle"
+                                    onPointerDown={event => {
+                                      event.preventDefault()
+                                      event.stopPropagation()
+                                      setActiveDrag({ kind: 'axis', axisId: axis.id, endpoint: key })
+                                    }}
+                                  />
+                                </g>
+                              ))}
+                            </g>
+                          )
+                        })}
+                        <circle
+                          cx={origin.x} cy={origin.y} r="10"
+                          fill="#ffd43b" stroke="#fff" strokeWidth="4"
+                          vectorEffect="non-scaling-stroke"
+                          className="calibration-handle origin-handle"
+                          onPointerDown={event => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                            setActiveDrag({ kind: 'origin' })
+                          }}
+                        />
+                        <circle
+                          cx={origin.x} cy={origin.y} r="3"
+                          fill="#342700"
+                          pointerEvents="none"
+                        />
                       </svg>
                     )}
                   </div>
@@ -218,8 +270,9 @@ function App() {
               {calibrationMode && mediaType === 'image' && (
                 <div className="calibration-footer">
                   <div className="calibration-legend">
-                    {lines.map(line => (
-                      <span key={line.id}><i style={{ backgroundColor: line.color }} />{line.label}</span>
+                    <span><i style={{ backgroundColor: '#ffd43b' }} />Origem comum</span>
+                    {axes.map(axis => (
+                      <span key={axis.id}><i style={{ backgroundColor: axis.color }} />{axis.label}</span>
                     ))}
                   </div>
                   <button className="secondary-button" onClick={resetCalibration}>Redefinir linhas</button>
@@ -258,7 +311,7 @@ function App() {
 
               <div className="calibration-controls">
                 <span className="section-label">CALIBRAÇÃO MANUAL</span>
-                <p>Use as três linhas auxiliares para marcar referências visuais do campo. Arraste os círculos nas extremidades de cada linha.</p>
+                <p>O ponto amarelo é a origem compartilhada. Arraste-o até o penúltimo defensor ou a bola mais próxima da linha de fundo. Ajuste as pontas coloridas para orientar os eixos vertical, lateral e de fundo.</p>
                 <button
                   className="primary-button full-button"
                   disabled={mediaType !== 'image' || !imageReady}
@@ -274,7 +327,7 @@ function App() {
                 <span className="info-icon">ⓘ</span>
                 <div>
                   <strong>Importante</strong>
-                  <p>As linhas auxiliares servem para referências de perspectiva. Elas não representam a linha de impedimento.</p>
+                  <p>O ponto amarelo define a origem dos três eixos. Os eixos representam referências espaciais do campo; não são, por si só, a linha de impedimento.</p>
                 </div>
               </div>
 

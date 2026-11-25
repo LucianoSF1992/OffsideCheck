@@ -88,3 +88,12 @@
   .media-area { min-height: 300px; margin: 12px; }
   .media-footer { flex-direction: column; }
 }
+
+
+/* Calibração tridimensional: origem compartilhada e três eixos */
+.calibration-handle { cursor: grab; touch-action: none; }
+.calibration-handle:active { cursor: grabbing; }
+.origin-handle { filter: drop-shadow(0 0 5px rgba(255, 212, 59, .8)); }
+.axis-handle { filter: drop-shadow(0 0 3px rgba(0, 0, 0, .8)); }
+.calibration-overlay { touch-action: none; }
+.calibration-legend { row-gap: 9px; }
