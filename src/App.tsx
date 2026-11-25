@@ -12,6 +12,32 @@ const initialAxes: Axis[] = [
   { id: 'goalLine', label: 'Eixo da linha de fundo', color: '#f4bd55', end: { x: 130, y: 450 } },
 ]
 
+const VIEWBOX_SIZE = 1000
+
+function getPointPercentage(point: Point) {
+  return {
+    x: (point.x / VIEWBOX_SIZE) * 100,
+    y: (point.y / VIEWBOX_SIZE) * 100,
+  }
+}
+
+function getVectorMetrics(from: Point, to: Point) {
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  const length = Math.hypot(dx, dy)
+  const angle = (Math.atan2(-dy, dx) * 180) / Math.PI
+
+  return { dx, dy, length, angle }
+}
+
+function formatCoordinate(value: number) {
+  return `${value.toFixed(1)}%`
+}
+
+function formatAngle(value: number) {
+  return `${value.toFixed(1)}°`
+}
+
 function App() {
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState('')
@@ -23,6 +49,16 @@ function App() {
   const [activeDrag, setActiveDrag] = useState<DragTarget | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
+
+  const verticalAxis = axes.find(axis => axis.id === 'vertical')
+  const sidelineAxis = axes.find(axis => axis.id === 'sideline')
+  const goalLineAxis = axes.find(axis => axis.id === 'goalLine')
+  const originPercentage = getPointPercentage(origin)
+  const verticalMetrics = verticalAxis ? getVectorMetrics(origin, verticalAxis.end) : null
+  const goalLineMetrics = goalLineAxis ? getVectorMetrics(origin, goalLineAxis.end) : null
+  const sidelineMetrics = sidelineAxis?.oppositeEnd
+    ? getVectorMetrics(sidelineAxis.oppositeEnd, sidelineAxis.end)
+    : null
 
   useEffect(() => {
     if (!file) return
@@ -76,8 +112,8 @@ function App() {
   function updatePoint(event: React.PointerEvent<SVGSVGElement>) {
     if (!activeDrag || !svgRef.current) return
     const rect = svgRef.current.getBoundingClientRect()
-    const x = Math.max(0, Math.min(1000, ((event.clientX - rect.left) / rect.width) * 1000))
-    const y = Math.max(0, Math.min(1000, ((event.clientY - rect.top) / rect.height) * 1000))
+    const x = Math.max(0, Math.min(VIEWBOX_SIZE, ((event.clientX - rect.left) / rect.width) * VIEWBOX_SIZE))
+    const y = Math.max(0, Math.min(VIEWBOX_SIZE, ((event.clientY - rect.top) / rect.height) * VIEWBOX_SIZE))
 
     if (activeDrag.kind === 'origin') {
       const deltaX = x - origin.x
@@ -86,13 +122,13 @@ function App() {
       setAxes(current => current.map(axis => ({
         ...axis,
         end: {
-          x: Math.max(0, Math.min(1000, axis.end.x + deltaX)),
-          y: Math.max(0, Math.min(1000, axis.end.y + deltaY)),
+          x: Math.max(0, Math.min(VIEWBOX_SIZE, axis.end.x + deltaX)),
+          y: Math.max(0, Math.min(VIEWBOX_SIZE, axis.end.y + deltaY)),
         },
         ...(axis.oppositeEnd ? {
           oppositeEnd: {
-            x: Math.max(0, Math.min(1000, axis.oppositeEnd.x + deltaX)),
-            y: Math.max(0, Math.min(1000, axis.oppositeEnd.y + deltaY)),
+            x: Math.max(0, Math.min(VIEWBOX_SIZE, axis.oppositeEnd.x + deltaX)),
+            y: Math.max(0, Math.min(VIEWBOX_SIZE, axis.oppositeEnd.y + deltaY)),
           },
         } : {}),
       })))
@@ -135,7 +171,7 @@ function App() {
       <main className="main">
         <header className="topbar">
           <div><span className="breadcrumb">Workspace /</span><strong> Nova análise</strong></div>
-          <div className="version">VERSÃO 0.3.1</div>
+          <div className="version">VERSÃO 0.4.0</div>
         </header>
 
         <section className="content">
@@ -153,7 +189,7 @@ function App() {
               <div className="panel-header">
                 <div>
                   <h2>{calibrationMode ? 'Calibração da perspectiva' : 'Visualização da jogada'}</h2>
-                  <span>{calibrationMode ? 'Mova a origem amarela e ajuste as extremidades dos três eixos' : 'Imagem ou vídeo da partida'}</span>
+                  <span>{calibrationMode ? 'Posicione a referência no penúltimo defensor e ajuste os três eixos' : 'Imagem ou vídeo da partida'}</span>
                 </div>
                 {file && <button className="clear-button" onClick={clearFile}>Remover arquivo</button>}
               </div>
@@ -170,7 +206,7 @@ function App() {
                       <svg
                         ref={svgRef}
                         className="calibration-overlay"
-                        viewBox="0 0 1000 1000"
+                        viewBox={`0 0 ${VIEWBOX_SIZE} ${VIEWBOX_SIZE}`}
                         preserveAspectRatio="none"
                         onPointerMove={updatePoint}
                       >
@@ -258,7 +294,7 @@ function App() {
               {calibrationMode && mediaType === 'image' && (
                 <div className="calibration-footer">
                   <div className="calibration-legend">
-                    <span><i style={{ backgroundColor: '#ffd43b' }} />Origem comum</span>
+                    <span><i style={{ backgroundColor: '#ffd43b' }} />Penúltimo defensor</span>
                     {axes.map(axis => (
                       <span key={axis.id}><i style={{ backgroundColor: axis.color }} />{axis.label}</span>
                     ))}
@@ -299,7 +335,7 @@ function App() {
 
               <div className="calibration-controls">
                 <span className="section-label">CALIBRAÇÃO MANUAL</span>
-                <p>O ponto amarelo é a origem compartilhada. Arraste-o até o penúltimo defensor ou a bola mais próxima da linha de fundo. Ajuste as pontas coloridas para orientar os eixos vertical, lateral e de fundo.</p>
+                <p>O ponto central escuro identifica o penúltimo defensor e funciona como origem compartilhada dos eixos. Posicione a extremidade laranja sobre a linha de fundo. Ajuste as demais extremidades para orientar as referências longitudinal e lateral do campo.</p>
                 <button
                   className="primary-button full-button"
                   disabled={mediaType !== 'image' || !imageReady}
@@ -315,14 +351,69 @@ function App() {
                 <span className="info-icon">ⓘ</span>
                 <div>
                   <strong>Importante</strong>
-                  <p>O ponto amarelo define a origem dos três eixos. Os eixos representam referências espaciais do campo; não são, por si só, a linha de impedimento.</p>
+                  <p>O ponto central identifica a referência do penúltimo defensor. A extremidade laranja indica a referência da linha de fundo. Os eixos orientam a calibração, mas não são, por si só, a linha de impedimento.</p>
                 </div>
+              </div>
+
+              <div className="geometry-card">
+                <div className="geometry-card-header">
+                  <div>
+                    <span className="section-label">BASE GEOMÉTRICA · v0.4.0</span>
+                    <strong>Geometria da imagem e do campo</strong>
+                  </div>
+                  <span className="geometry-live"><i /> AO VIVO</span>
+                </div>
+
+                <div className="geometry-origin">
+                  <span className="geometry-dot" />
+                  <div>
+                    <span>Referência na imagem (normalizada)</span>
+                    <strong>X {formatCoordinate(originPercentage.x)} <em>·</em> Y {formatCoordinate(originPercentage.y)}</strong>
+                  </div>
+                </div>
+
+                <div className="geometry-metrics">
+                  {verticalMetrics && (
+                    <div className="geometry-metric">
+                      <span><i style={{ backgroundColor: '#38d99a' }} />Eixo longitudinal (imagem)</span>
+                      <strong>{verticalMetrics.length.toFixed(1)} u</strong>
+                      <small>Ângulo {formatAngle(verticalMetrics.angle)}</small>
+                    </div>
+                  )}
+                  {sidelineMetrics && (
+                    <div className="geometry-metric">
+                      <span><i style={{ backgroundColor: '#55a8ff' }} />Eixo lateral (imagem)</span>
+                      <strong>{sidelineMetrics.length.toFixed(1)} u</strong>
+                      <small>Ângulo {formatAngle(sidelineMetrics.angle)}</small>
+                    </div>
+                  )}
+                  {goalLineMetrics && (
+                    <div className="geometry-metric">
+                      <span><i style={{ backgroundColor: '#f4bd55' }} />Direção da linha de fundo</span>
+                      <strong>{goalLineMetrics.length.toFixed(1)} u</strong>
+                      <small>Ângulo {formatAngle(goalLineMetrics.angle)}</small>
+                    </div>
+                  )}
+                </div>
+
+                <div className="geometry-field-status">
+                  <strong>PLANO REAL DO CAMPO · AINDA NÃO CALIBRADO</strong>
+                  <span>As coordenadas em metros serão calculadas após relacionar pelo menos quatro pontos conhecidos do campo com seus pontos correspondentes na imagem.</span>
+                </div>
+
+                <p className="geometry-disclaimer">
+                  As coordenadas e distâncias acima pertencem somente ao espaço 2D da imagem
+                  (escala interna 1000 × 1000). Elas descrevem a posição e a orientação dos eixos na
+                  imagem, não distâncias reais em metros. Para converter pontos da imagem em coordenadas
+                  do campo, precisaremos de pelo menos quatro correspondências entre pontos visíveis e
+                  posições conhecidas no gramado (homografia).
+                </p>
               </div>
 
               <div className="coming-soon">
                 <span>PRÓXIMAS ETAPAS</span>
-                <strong>Marcação de jogadores e bola</strong>
-                <p>O cálculo geométrico será desenvolvido após a calibração.</p>
+                <strong>Plano do campo e homografia</strong>
+                <p>Próxima etapa: informar dimensões do campo e selecionar pelo menos quatro pontos correspondentes para relacionar a imagem ao plano do gramado.</p>
               </div>
             </aside>
           </div>
