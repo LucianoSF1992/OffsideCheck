@@ -9,6 +9,8 @@
   </head>
   <body>
     <div id="root"></div>
+    <script async src="https://docs.opencv.org/4.x/opencv.js"
+      onload="if (window.cv) { window.cv.onRuntimeInitialized = () => window.dispatchEvent(new Event('opencv-ready')); if (window.cv.Mat) window.dispatchEvent(new Event('opencv-ready')); }"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

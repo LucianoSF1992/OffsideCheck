@@ -2,6 +2,21 @@ import { useEffect, useRef, useState } from 'react'
 import './App.css'
 
 type Point = { x: number; y: number }
+type DetectedLine = { x1: number; y1: number; x2: number; y2: number; length: number }
+type OpenCvRuntime = {
+  Mat: new () => { rows: number; cols: number; data32S: Int32Array; delete: () => void }
+  matFromImageData: (imageData: ImageData) => { delete: () => void }
+  cvtColor: (src: unknown, dst: unknown, code: number) => void
+  threshold: (src: unknown, dst: unknown, threshold: number, maxValue: number, type: number) => void
+  Canny: (src: unknown, dst: unknown, threshold1: number, threshold2: number) => void
+  HoughLinesP: (src: unknown, lines: unknown, rho: number, theta: number, threshold: number, minLineLength: number, maxLineGap: number) => void
+  Scalar: new (v0: number, v1?: number, v2?: number, v3?: number) => unknown
+  COLOR_RGBA2GRAY: number
+  THRESH_BINARY: number
+}
+declare global {
+  interface Window { cv?: OpenCvRuntime }
+}
 type Axis = { id: 'vertical' | 'sideline' | 'goalLine'; label: string; color: string; end: Point; oppositeEnd?: Point }
 type DragTarget = { kind: 'origin' } | { kind: 'axis'; axisId: Axis['id']; endpoint: 'end' | 'oppositeEnd' }
 
@@ -38,6 +53,7 @@ function formatAngle(value: number) {
   return `${value.toFixed(1)}°`
 }
 
+
 function App() {
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState('')
@@ -47,6 +63,11 @@ function App() {
   const [origin, setOrigin] = useState<Point>(initialOrigin)
   const [axes, setAxes] = useState<Axis[]>(initialAxes)
   const [activeDrag, setActiveDrag] = useState<DragTarget | null>(null)
+  const [openCvReady, setOpenCvReady] = useState(false)
+  const [isDetecting, setIsDetecting] = useState(false)
+  const [detectedLines, setDetectedLines] = useState<DetectedLine[]>([])
+  const [detectionMessage, setDetectionMessage] = useState('Aguardando imagem para análise.')
+  const imageRef = useRef<HTMLImageElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
 
@@ -59,6 +80,24 @@ function App() {
   const sidelineMetrics = sidelineAxis?.oppositeEnd
     ? getVectorMetrics(sidelineAxis.oppositeEnd, sidelineAxis.end)
     : null
+
+  useEffect(() => {
+    // O OpenCV pode carregar depois do React e o evento do script pode ocorrer
+    // antes deste efeito. Verificamos o runtime até Mat estar disponível.
+    const checkOpenCv = () => {
+      const ready = typeof window.cv !== 'undefined' && typeof window.cv.Mat === 'function'
+      setOpenCvReady(ready)
+      return ready
+    }
+
+    if (checkOpenCv()) return
+
+    const intervalId = window.setInterval(() => {
+      if (checkOpenCv()) window.clearInterval(intervalId)
+    }, 250)
+
+    return () => window.clearInterval(intervalId)
+  }, [])
 
   useEffect(() => {
     if (!file) return
@@ -142,6 +181,90 @@ function App() {
     ))
   }
 
+  function detectFieldLines() {
+    const cv = window.cv
+    const image = imageRef.current
+    if (!cv) {
+      setDetectionMessage('OpenCV.js não está disponível. Atualize a página e aguarde o status OPENCV PRONTO.')
+      return
+    }
+    if (!image || !image.naturalWidth || !image.naturalHeight) {
+      setDetectionMessage('A referência da imagem não foi encontrada ou a imagem ainda não terminou de carregar.')
+      return
+    }
+
+    setIsDetecting(true)
+    setDetectionMessage('Processando imagem...')
+    setDetectedLines([])
+
+    // Yield one frame so the interface can display the processing state.
+    window.requestAnimationFrame(() => {
+      let src: ReturnType<OpenCvRuntime['matFromImageData']> | null = null
+      let gray: InstanceType<OpenCvRuntime['Mat']> | null = null
+      let whiteMask: InstanceType<OpenCvRuntime['Mat']> | null = null
+      let edges: InstanceType<OpenCvRuntime['Mat']> | null = null
+      let lines: InstanceType<OpenCvRuntime['Mat']> | null = null
+
+      try {
+        const canvas = document.createElement('canvas')
+        const maxDimension = 1400
+        const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight))
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale))
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale))
+        const context = canvas.getContext('2d')
+        if (!context) throw new Error('Não foi possível preparar a imagem para processamento.')
+        context.drawImage(image, 0, 0, canvas.width, canvas.height)
+
+        src = cv.matFromImageData(context.getImageData(0, 0, canvas.width, canvas.height))
+        gray = new cv.Mat()
+        whiteMask = new cv.Mat()
+        edges = new cv.Mat()
+        lines = new cv.Mat()
+
+        // Converte para tons de cinza e destaca pixels claros.
+        // Essa abordagem evita Scalar/inRange e simplifica a compatibilidade com OpenCV.js.
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY)
+        cv.threshold(gray, whiteMask, 185, 255, cv.THRESH_BINARY)
+        cv.Canny(whiteMask, edges, 50, 150)
+        cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 45, Math.max(35, canvas.width * 0.035), 18)
+
+        const found: DetectedLine[] = []
+        const values = lines.data32S
+        for (let i = 0; i + 3 < values.length; i += 4) {
+          const x1 = values[i]
+          const y1 = values[i + 1]
+          const x2 = values[i + 2]
+          const y2 = values[i + 3]
+          const length = Math.hypot(x2 - x1, y2 - y1)
+          if (length < Math.max(35, canvas.width * 0.035)) continue
+          found.push({
+            x1: (x1 / canvas.width) * VIEWBOX_SIZE,
+            y1: (y1 / canvas.height) * VIEWBOX_SIZE,
+            x2: (x2 / canvas.width) * VIEWBOX_SIZE,
+            y2: (y2 / canvas.height) * VIEWBOX_SIZE,
+            length,
+          })
+        }
+
+        setDetectedLines(found)
+        setDetectionMessage(
+          found.length
+            ? `${found.length} segmentos candidatos detectados. Revise visualmente se correspondem às linhas do campo.`
+            : 'Nenhum segmento longo foi identificado. Tente outra imagem ou uma imagem com as marcações mais visíveis.'
+        )
+      } catch (error) {
+        setDetectionMessage(error instanceof Error ? error.message : 'Falha ao processar a imagem.')
+      } finally {
+        src?.delete()
+        gray?.delete()
+        whiteMask?.delete()
+        edges?.delete()
+        lines?.delete()
+        setIsDetecting(false)
+      }
+    })
+  }
+
   function resetCalibration() {
     setOrigin(initialOrigin)
     setAxes(initialAxes)
@@ -171,7 +294,7 @@ function App() {
       <main className="main">
         <header className="topbar">
           <div><span className="breadcrumb">Workspace /</span><strong> Nova análise</strong></div>
-          <div className="version">VERSÃO 0.4.0</div>
+          <div className="version">VERSÃO 0.5.0</div>
         </header>
 
         <section className="content">
@@ -179,7 +302,7 @@ function App() {
             <div>
               <span className="eyebrow">ANÁLISE DE ARBITRAGEM</span>
               <h1>Análise de impedimento</h1>
-              <p>Carregue uma jogada e prepare a perspectiva do campo.</p>
+              <p>Carregue uma imagem do lance para iniciar a análise.</p>
             </div>
             <div className="law-tag">IFAB · REGRA 11</div>
           </div>
@@ -198,10 +321,19 @@ function App() {
                 {preview && mediaType === 'image' && (
                   <div className="calibration-stage">
                     <img
+                      ref={imageRef}
                       src={preview}
                       alt="Imagem da jogada selecionada"
-                      onLoad={() => setImageReady(true)}
+                      onLoad={() => { setImageReady(true); setDetectedLines([]); setDetectionMessage('Imagem pronta. Execute a detecção das linhas.'); }}
                     />
+                    {detectedLines.length > 0 && imageReady && (
+                      <svg className="detection-overlay" viewBox={`0 0 ${VIEWBOX_SIZE} ${VIEWBOX_SIZE}`} preserveAspectRatio="none" aria-label="Segmentos detectados">
+                        {detectedLines.map((line, index) => (
+                          <line key={`detected-${index}`} x1={line.x1} y1={line.y1} x2={line.x2} y2={line.y2}
+                            stroke="#ff4d6d" strokeWidth="3" vectorEffect="non-scaling-stroke" strokeLinecap="round" />
+                        ))}
+                      </svg>
+                    )}
                     {calibrationMode && imageReady && (
                       <svg
                         ref={svgRef}
@@ -259,6 +391,7 @@ function App() {
                           fill="#342700"
                           pointerEvents="none"
                         />
+
                       </svg>
                     )}
                   </div>
@@ -318,7 +451,7 @@ function App() {
                 </div>
                 <div className={`step ${calibrationMode ? 'selected-step' : ''}`}>
                   <span className="step-number">02</span>
-                  <div><strong>Calibrar perspectiva</strong><p>Definir referências do campo</p></div>
+                  <div><strong>Referência visual</strong><p>Orientar a projeção da linha</p></div>
                   <span className="step-status">{calibrationMode ? '●' : '○'}</span>
                 </div>
                 <div className="step">
@@ -334,8 +467,8 @@ function App() {
               </div>
 
               <div className="calibration-controls">
-                <span className="section-label">CALIBRAÇÃO MANUAL</span>
-                <p>O ponto central escuro identifica o penúltimo defensor e funciona como origem compartilhada dos eixos. Posicione a extremidade laranja sobre a linha de fundo. Ajuste as demais extremidades para orientar as referências longitudinal e lateral do campo.</p>
+                <span className="section-label">REFERÊNCIA DA ANÁLISE</span>
+                <p>O ponto central identifica a posição de referência do penúltimo defensor. Os eixos ajudam a orientar visualmente a perspectiva e a projeção da linha. Nesta versão, o ajuste ainda é manual; a detecção automática das marcações do campo será implementada na próxima etapa.</p>
                 <button
                   className="primary-button full-button"
                   disabled={mediaType !== 'image' || !imageReady}
@@ -351,15 +484,15 @@ function App() {
                 <span className="info-icon">ⓘ</span>
                 <div>
                   <strong>Importante</strong>
-                  <p>O ponto central identifica a referência do penúltimo defensor. A extremidade laranja indica a referência da linha de fundo. Os eixos orientam a calibração, mas não são, por si só, a linha de impedimento.</p>
+                  <p>A referência do penúltimo defensor e os eixos auxiliam a análise visual. A linha de impedimento deverá ser projetada considerando a perspectiva do campo; os eixos, isoladamente, ainda não determinam o resultado.</p>
                 </div>
               </div>
 
               <div className="geometry-card">
                 <div className="geometry-card-header">
                   <div>
-                    <span className="section-label">BASE GEOMÉTRICA · v0.4.0</span>
-                    <strong>Geometria da imagem e do campo</strong>
+                    <span className="section-label">BASE GEOMÉTRICA · v0.5.0</span>
+                    <strong>Referências geométricas da imagem</strong>
                   </div>
                   <span className="geometry-live"><i /> AO VIVO</span>
                 </div>
@@ -397,23 +530,51 @@ function App() {
                 </div>
 
                 <div className="geometry-field-status">
-                  <strong>PLANO REAL DO CAMPO · AINDA NÃO CALIBRADO</strong>
-                  <span>As coordenadas em metros serão calculadas após relacionar pelo menos quatro pontos conhecidos do campo com seus pontos correspondentes na imagem.</span>
+                  <strong>DETECÇÃO AUTOMÁTICA · EM DESENVOLVIMENTO</strong>
+                  <span>A primeira detecção de segmentos claros está disponível. A classificação das linhas do campo e a estimativa de perspectiva ainda serão desenvolvidas.</span>
                 </div>
 
                 <p className="geometry-disclaimer">
-                  As coordenadas e distâncias acima pertencem somente ao espaço 2D da imagem
-                  (escala interna 1000 × 1000). Elas descrevem a posição e a orientação dos eixos na
-                  imagem, não distâncias reais em metros. Para converter pontos da imagem em coordenadas
-                  do campo, precisaremos de pelo menos quatro correspondências entre pontos visíveis e
-                  posições conhecidas no gramado (homografia).
+                  As medidas acima descrevem somente posições e direções no espaço 2D da imagem.
+                  Elas ainda não representam distâncias reais no gramado nem realizam a correção automática
+                  da perspectiva.
                 </p>
               </div>
 
+
+              <div className="detection-card">
+                <div className="detection-card-heading">
+                  <span className="section-label">VISÃO COMPUTACIONAL · v0.5.0</span>
+                  <span className={`opencv-status ${openCvReady ? 'ready' : 'loading'}`}>
+                    <i /> {openCvReady ? 'OPENCV PRONTO' : 'CARREGANDO OPENCV'}
+                  </span>
+                </div>
+                <strong>Detecção inicial das linhas do campo</strong>
+                <p>O processamento procura segmentos longos associados a regiões claras e pouco saturadas da imagem. Os resultados são candidatos visuais, não uma identificação definitiva das linhas do gramado.</p>
+                <button className="primary-button full-button" disabled={!imageReady || mediaType !== 'image' || !openCvReady || isDetecting}
+                  onClick={detectFieldLines}>
+                  {isDetecting ? 'Analisando imagem...' : 'Detectar linhas do campo'}
+                </button>
+                <button className="secondary-button full-button" disabled={detectedLines.length === 0}
+                  onClick={() => { setDetectedLines([]); setDetectionMessage('Detecção removida.'); }}>
+                  Limpar detecção
+                </button>
+                <div className="detection-feedback">{detectionMessage}</div>
+                {detectedLines.length > 0 && <div className="detection-count">{detectedLines.length} segmentos sobrepostos em vermelho</div>}
+                {!openCvReady && <p className="detection-footnote">É necessária conexão com a internet na primeira carga para baixar o OpenCV.js.</p>}
+              </div>
+
+              <div className="info-card">
+                <span className="info-icon">◎</span>
+                <div>
+                  <strong>Próxima etapa · análise automática</strong>
+                  <p>Classificar as marcações detectadas, estimar a perspectiva, localizar os jogadores e a bola e projetar a linha de impedimento a partir do penúltimo adversário. O sistema deverá apresentar o resultado e permitir revisão das detecções.</p>
+                </div>
+              </div>
               <div className="coming-soon">
                 <span>PRÓXIMAS ETAPAS</span>
-                <strong>Plano do campo e homografia</strong>
-                <p>Próxima etapa: informar dimensões do campo e selecionar pelo menos quatro pontos correspondentes para relacionar a imagem ao plano do gramado.</p>
+                <strong>Detecção das linhas e projeção automática</strong>
+                <p>Sem marcação manual de quatro pontos. A análise será construída a partir das linhas visíveis do campo e da posição dos jogadores e da bola.</p>
               </div>
             </aside>
           </div>
