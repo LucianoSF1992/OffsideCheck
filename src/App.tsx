@@ -189,19 +189,16 @@ function App() {
       return
     }
     if (!image || !image.naturalWidth || !image.naturalHeight) {
-      setDetectionMessage('A referência da imagem não foi encontrada ou a imagem ainda não terminou de carregar.')
+      setDetectionMessage('A imagem ainda não está pronta para processamento.')
       return
     }
 
     setIsDetecting(true)
-    setDetectionMessage('Processando imagem...')
+    setDetectionMessage('Identificando o gramado e procurando marcações claras...')
     setDetectedLines([])
 
-    // Yield one frame so the interface can display the processing state.
     window.requestAnimationFrame(() => {
-      let src: ReturnType<OpenCvRuntime['matFromImageData']> | null = null
-      let gray: InstanceType<OpenCvRuntime['Mat']> | null = null
-      let whiteMask: InstanceType<OpenCvRuntime['Mat']> | null = null
+      let mask: ReturnType<OpenCvRuntime['matFromImageData']> | null = null
       let edges: InstanceType<OpenCvRuntime['Mat']> | null = null
       let lines: InstanceType<OpenCvRuntime['Mat']> | null = null
 
@@ -211,22 +208,76 @@ function App() {
         const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight))
         canvas.width = Math.max(1, Math.round(image.naturalWidth * scale))
         canvas.height = Math.max(1, Math.round(image.naturalHeight * scale))
+
         const context = canvas.getContext('2d')
         if (!context) throw new Error('Não foi possível preparar a imagem para processamento.')
         context.drawImage(image, 0, 0, canvas.width, canvas.height)
 
-        src = cv.matFromImageData(context.getImageData(0, 0, canvas.width, canvas.height))
-        gray = new cv.Mat()
-        whiteMask = new cv.Mat()
+        const imageData = context.getImageData(0, 0, canvas.width, canvas.height)
+        const { data, width, height } = imageData
+
+        // 1) Estima o início do gramado pela presença persistente de pixels verdes
+        // em cada linha horizontal. Isso exclui arquibancadas e placas acima do campo.
+        const greenRatioByRow = new Array<number>(height).fill(0)
+        for (let y = 0; y < height; y++) {
+          let greenPixels = 0
+          for (let x = 0; x < width; x += 2) {
+            const i = (y * width + x) * 4
+            const r = data[i], g = data[i + 1], b = data[i + 2]
+            if (g > 42 && g > r * 1.10 && g > b * 1.04 && (g - r) > 8) greenPixels++
+          }
+          greenRatioByRow[y] = greenPixels / Math.ceil(width / 2)
+        }
+
+        let turfStartY = Math.floor(height * 0.18)
+        const requiredGreenRatio = 0.16
+        for (let y = Math.floor(height * 0.12); y < Math.floor(height * 0.65); y++) {
+          let consecutiveRows = 0
+          for (let k = 0; k < 7 && y + k < height; k++) {
+            if (greenRatioByRow[y + k] >= requiredGreenRatio) consecutiveRows++
+          }
+          if (consecutiveRows >= 6) {
+            turfStartY = Math.max(0, y - Math.round(height * 0.008))
+            break
+          }
+        }
+
+        // 2) Cria uma máscara apenas com pixels quase brancos dentro da região
+        // identificada como gramado. Evita detectar textos/placas na arquibancada.
+        const maskImage = new ImageData(width, height)
+        const maskData = maskImage.data
+        for (let y = turfStartY; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const i = (y * width + x) * 4
+            const r = data[i], g = data[i + 1], b = data[i + 2]
+            const max = Math.max(r, g, b)
+            const min = Math.min(r, g, b)
+            const brightNeutral = min >= 132 && (max - min) <= 72
+            if (brightNeutral) {
+              maskData[i] = 255
+              maskData[i + 1] = 255
+              maskData[i + 2] = 255
+              maskData[i + 3] = 255
+            } else {
+              maskData[i + 3] = 255
+            }
+          }
+        }
+
+        mask = cv.matFromImageData(maskImage)
         edges = new cv.Mat()
         lines = new cv.Mat()
 
-        // Converte para tons de cinza e destaca pixels claros.
-        // Essa abordagem evita Scalar/inRange e simplifica a compatibilidade com OpenCV.js.
-        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY)
-        cv.threshold(gray, whiteMask, 185, 255, cv.THRESH_BINARY)
-        cv.Canny(whiteMask, edges, 50, 150)
-        cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 45, Math.max(35, canvas.width * 0.035), 18)
+        cv.Canny(mask, edges, 55, 160)
+        cv.HoughLinesP(
+          edges,
+          lines,
+          1,
+          Math.PI / 180,
+          58,
+          Math.max(45, canvas.width * 0.045),
+          Math.max(12, Math.round(canvas.width * 0.012))
+        )
 
         const found: DetectedLine[] = []
         const values = lines.data32S
@@ -236,7 +287,9 @@ function App() {
           const x2 = values[i + 2]
           const y2 = values[i + 3]
           const length = Math.hypot(x2 - x1, y2 - y1)
-          if (length < Math.max(35, canvas.width * 0.035)) continue
+          if (length < Math.max(45, canvas.width * 0.045)) continue
+
+          // Converte para o sistema de coordenadas do overlay.
           found.push({
             x1: (x1 / canvas.width) * VIEWBOX_SIZE,
             y1: (y1 / canvas.height) * VIEWBOX_SIZE,
@@ -249,15 +302,13 @@ function App() {
         setDetectedLines(found)
         setDetectionMessage(
           found.length
-            ? `${found.length} segmentos candidatos detectados. Revise visualmente se correspondem às linhas do campo.`
-            : 'Nenhum segmento longo foi identificado. Tente outra imagem ou uma imagem com as marcações mais visíveis.'
+            ? `${found.length} segmentos candidatos encontrados na região do gramado (início estimado em ${(turfStartY / height * 100).toFixed(1)}% da imagem). Ainda podem existir falsos positivos em uniformes e outras áreas claras.`
+            : 'O gramado foi localizado, mas nenhum segmento longo foi encontrado. Tente uma imagem com linhas mais visíveis.'
         )
       } catch (error) {
         setDetectionMessage(error instanceof Error ? error.message : 'Falha ao processar a imagem.')
       } finally {
-        src?.delete()
-        gray?.delete()
-        whiteMask?.delete()
+        mask?.delete()
         edges?.delete()
         lines?.delete()
         setIsDetecting(false)
@@ -294,7 +345,7 @@ function App() {
       <main className="main">
         <header className="topbar">
           <div><span className="breadcrumb">Workspace /</span><strong> Nova análise</strong></div>
-          <div className="version">VERSÃO 0.5.0</div>
+          <div className="version">VERSÃO 0.5.5</div>
         </header>
 
         <section className="content">
@@ -544,7 +595,7 @@ function App() {
 
               <div className="detection-card">
                 <div className="detection-card-heading">
-                  <span className="section-label">VISÃO COMPUTACIONAL · v0.5.0</span>
+                  <span className="section-label">VISÃO COMPUTACIONAL · v0.5.5</span>
                   <span className={`opencv-status ${openCvReady ? 'ready' : 'loading'}`}>
                     <i /> {openCvReady ? 'OPENCV PRONTO' : 'CARREGANDO OPENCV'}
                   </span>
